@@ -40,7 +40,7 @@ func TestMemMapBytesVal(t *testing.T) {
 	assert.Equal(t, v2, tv2)
 
 	tv3, err := mm.Get(ctx, k3)
-	assert.Nil(t, err)
+	assert.ErrorIs(t, err, ErrValueNotExist)
 	assert.Nil(t, tv3)
 
 	// has

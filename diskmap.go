@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"io"
+	"io/ioutil"
 	"log"
 	"os"
 	"sync"
@@ -15,28 +17,54 @@ var (
 	ErrSpaceNotEnough = errors.New("space not enough")
 	ErrWrongPosiLen   = errors.New("posi []byte len must be 16")
 
-	ErrUnexpectedEnd             = errors.New("read unexpected end")
-	dm               IMapStorage = &DiskMap{}
+	ErrUnexpectedEnd  = errors.New("read unexpected end")
+	ErrFileBlockSize  = errors.New("invalid file block size")
+	ErrInvalidPageNum = errors.New("invalid page num")
+
+	dm IMapStorage = &DiskMap{}
 )
 
 type DiskMapOpt struct {
-	ValueFunc func(ctx context.Context, b []byte) (Value, error)
+	ValueFunc    func(ctx context.Context, b []byte) (Value, error)
+	DataFile     *os.File
+	IndexManager io.ReadWriter
 }
 
-func NewDiskMap(opt DiskMapOpt) IMapStorage {
+func NewDiskMap(opt DiskMapOpt) (IMapStorage, error) {
 	if opt.ValueFunc == nil {
 		opt.ValueFunc = DecodeBytesValue
 	}
 
-	return &DiskMap{
-		valueFunc: opt.ValueFunc,
+	b, err := ioutil.ReadAll(opt.IndexManager)
+	if err != nil {
+		return nil, err
 	}
+
+	idxManager := NewKeyIndex()
+	err = idxManager.Decode(b)
+	if err != nil {
+		return nil, err
+	}
+
+	pageManager, err := NewPageManager(PageManagerOpt{
+		PageSize: 512,
+		File:     opt.DataFile,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &DiskMap{
+		valueFunc:    opt.ValueFunc,
+		indexManager: idxManager,
+		pageManager:  pageManager,
+	}, nil
 }
 
 type DiskMap struct {
-	indexManager KeyIndex
+	indexManager *KeyIndex
 
-	pageManager PageManager
+	pageManager *PageManager
 
 	valueFunc func(ctx context.Context, b []byte) (Value, error)
 }
@@ -82,12 +110,12 @@ func (dm *DiskMap) Set(ctx context.Context, key string, val Value) error {
 
 	// 1. 看当前 key 的 block 大小是否够，够则直接 write
 	obl, err = dm.getBlock(ctx, key)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrValueNotExist) {
 		return errors.Wrap(err, baseErr.Error())
 	}
 
-	// 2. 若不够，则获取新 block
-	if obl.GetBlockLength() < len(b) {
+	// 2. 若不存在或空间够，则获取新 block，否则直接复用老 block
+	if errors.Is(err, ErrValueNotExist) || obl.GetBlockLength() < len(b) {
 		bl, err = dm.pageManager.GetBlockBySize(len(b))
 		if err != nil {
 			return errors.Wrap(err, baseErr.Error())
@@ -116,7 +144,7 @@ func (dm *DiskMap) Set(ctx context.Context, key string, val Value) error {
 	}
 
 	// 5. 释放无用的 block
-	if !useOldBlock {
+	if !useOldBlock && obl != nil {
 		obl.Free()
 	}
 
@@ -155,6 +183,12 @@ func (dm *DiskMap) getBlock(ctx context.Context, key string) (*Block, error) {
 	}
 
 	return dm.pageManager.GetBlock(po)
+}
+
+func NewKeyIndex() *KeyIndex {
+	return &KeyIndex{
+		m: map[string]Posi{},
+	}
 }
 
 type KeyIndex struct {
@@ -261,18 +295,30 @@ type IFile interface {
 }
 
 type PageManager struct {
-	pagesBitMap *BitMap
-	pageSize    int
+	mu sync.Mutex
 
-	file os.File
+	pagesBitMap *BitMap
+
+	file *os.File
+
+	PagesInfo
+
+	baseGrowStep int
+}
+
+type PagesInfo struct {
+	PagesNum int
+	PageSize int
 }
 
 type PageNum uint64
 
 type PageManagerOpt struct {
-	PageSize int
-	Index    IndexFile
-	File     os.File // 数据文件
+	PageSize     int
+	BaseGrowStep int
+
+	File *os.File // 数据文件
+
 }
 
 // 索引文件
@@ -280,24 +326,104 @@ type IndexFile struct {
 	file os.File
 }
 
-func NewPageManager(opt PageManagerOpt) *PageManager {
-	return &PageManager{
-		pageSize:    opt.PageSize,
-		pagesBitMap: NewBitMap(10),
+func (idf *IndexFile) Read(b []byte) (n int, err error) {
+	return idf.file.Read(b)
+}
+
+func (idf *IndexFile) Write(b []byte) (n int, err error) {
+	return idf.file.Write(b)
+}
+
+func NewPageManager(opt PageManagerOpt) (*PageManager, error) {
+	pm := &PageManager{
+		file: opt.File,
 	}
 
+	pm.PageSize = opt.PageSize
+
+	finfo, err := opt.File.Stat()
+	if err != nil {
+		return nil, err
+	}
+
+	fsize := finfo.Size()
+	mod := fsize % int64(pm.PageSize)
+	if mod != 0 {
+		// 姑且用简单的余数校验，以后可以加 meta 信息，例如 checksum
+		return nil, ErrFileBlockSize
+	}
+
+	pm.PagesNum = int(fsize) / pm.PageSize
+	pm.pagesBitMap = NewBitMap(pm.PagesNum)
+
+	return pm, nil
 }
 
 // GetBlockBySize 按所需大小获取 block
 func (pm *PageManager) GetBlockBySize(size int) (*Block, error) {
-	return nil, nil
+	pages := (size-1)/pm.PageSize + 1
+
+	var spage, epage int
+	var ok bool
+
+	err := TryTimes(func() error {
+		spage, epage, ok = getContinuousPages(pm, pages)
+
+		if !ok {
+			pm.grow(pages)
+			return errors.New("pages not enough")
+		}
+
+		return nil
+	}, 5)
+	if err != nil {
+		return nil, err
+	}
+
+	// 这里不是原子的，有可能有并发问题
+	for i := 0; i < epage-spage; i++ {
+		pm.pagesBitMap.SetRange(spage, pages)
+	}
+
+	posi := Posi{
+		PageNum: PageNum(spage),
+		Len:     size,
+	}
+
+	return pm.GetBlock(posi)
+}
+
+func getContinuousPages(pm *PageManager, pages int) (start, end int, ok bool) {
+	found := false
+	startPage := 0
+
+	for i := 0; i < pm.PagesNum; i++ {
+		occupied := pm.pagesBitMap.Get(i)
+		if occupied {
+			startPage = i
+			continue
+		} else if i-startPage+1 == pages {
+			found = true
+			break
+		}
+	}
+
+	if found {
+		return startPage, startPage + pages, true
+	}
+
+	return 0, 0, false
 }
 
 // GetBlock 获取已有 block
 func (pm *PageManager) GetBlock(po Posi) (*Block, error) {
-	pagesNum := (po.Len-1)/int(pm.pageSize) + 1
+	if pm.PagesNum < int(po.PageNum) {
+		return nil, ErrInvalidPageNum
+	}
 
-	d := make([]byte, pagesNum*int(pm.pageSize))
+	pagesNum := (po.Len-1)/int(pm.PageSize) + 1
+
+	d := make([]byte, pagesNum*int(pm.PageSize))
 
 	n, err := pm.file.ReadAt(d, int64(pm.getOffset(po.PageNum)))
 	if err != nil {
@@ -309,12 +435,15 @@ func (pm *PageManager) GetBlock(po Posi) (*Block, error) {
 	}
 
 	pages := make([]*Page, pagesNum)
+	for i := 0; i < pagesNum; i++ {
+		pages[i] = &Page{}
+	}
 
 	pageNum := po.PageNum
 	for _, p := range pages {
 		p.pageNum = pageNum
-		p.data = d[int(pageNum-po.PageNum)*int(pm.pageSize) : int(pageNum-po.PageNum+1)*int(pm.pageSize)]
-		p.pageSize = int(pm.pageSize)
+		p.data = d[int(pageNum-po.PageNum)*int(pm.PageSize) : int(pageNum-po.PageNum+1)*int(pm.PageSize)]
+		p.pageSize = int(pm.PageSize)
 		pageNum++
 	}
 
@@ -325,16 +454,34 @@ func (pm *PageManager) GetBlock(po Posi) (*Block, error) {
 }
 
 func (pm *PageManager) getPagesSize(pagesNum int) int64 {
-	return int64(pm.pageSize) * int64(pagesNum)
+	return int64(pm.PageSize) * int64(pagesNum)
 }
 
 func (pm *PageManager) getOffset(pn PageNum) int64 {
-	return int64(pn) * int64(pm.pageSize)
+	return int64(pn) * int64(pm.PageSize)
 }
 
 // grow 增长多少个 page
-func (pm *PageManager) grow(pages int) error {
-	// todo
+func (pm *PageManager) grow(needPages int) error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	growPages := needPages
+	if pm.baseGrowStep > needPages {
+		growPages = pm.baseGrowStep
+	}
+
+	off := pm.getOffset(PageNum(pm.PagesNum + growPages))
+
+	tmpb := make([]byte, growPages*pm.PageSize)
+	_, err := pm.file.WriteAt(tmpb, off)
+	if err != nil {
+		return err
+	}
+
+	pm.pagesBitMap.Grow(growPages)
+	pm.PagesNum += growPages
+
 	return nil
 }
 
@@ -347,15 +494,32 @@ func (pm *PageManager) FreePage(pageNum PageNum) {
 	pm.pagesBitMap.UnSet(int(pageNum))
 }
 
+// WritePage
+func (pm *PageManager) writePage(p *Page) error {
+	// pm.file.
+	return nil
+
+}
+
+func (pm *PageManager) writeBlock(b *Block) error {
+	// TODO
+	return nil
+}
+
 func (pm *PageManager) GetPageByPageNum(pagenum PageNum) (*Page, error) {
-	p := &Page{
-		pageNum:  pagenum,
-		pageSize: int(pm.pageSize),
-		data:     make([]byte, pm.pageSize),
+	if pm.PagesNum < int(pagenum) {
+		return nil, ErrInvalidPageNum
 	}
 
-	off := pagenum * PageNum(pm.pageSize)
+	p := &Page{
+		pageNum:  pagenum,
+		pageSize: int(pm.PageSize),
+		data:     make([]byte, pm.PageSize),
+	}
 
+	off := pagenum * PageNum(pm.PageSize)
+
+	// todo use mmap
 	_, err := pm.file.ReadAt(p.data, int64(off))
 	if err != nil {
 		return nil, err
@@ -394,6 +558,7 @@ func (p *Page) Write(d []byte) (n int, err error) {
 
 	p.dirty = true
 
+	// TODO write 和 read 要能够连续读写
 	i := copy(p.data, d)
 
 	return i, nil
@@ -447,6 +612,20 @@ func (b *Block) Read(tb []byte) (int, error) {
 	}
 
 	return nowLen, nil
+}
+
+func (b *Block) ReadAll() ([]byte, error) {
+	tb := make([]byte, b.filledLen)
+	n, err := b.Read(tb)
+	if err != nil {
+		return nil, err
+	}
+
+	if n != len(tb) {
+		return nil, ErrUnexpectedEnd
+	}
+
+	return tb, nil
 }
 
 func (b *Block) GetBlockLength() int {
@@ -504,6 +683,11 @@ func (b *Block) Write(d []byte) (n int, err error) {
 }
 
 func (b *Block) Close() (err error) {
+	err = b.pageManager.writeBlock(b)
+	if err != nil {
+		return err
+	}
+
 	for _, p := range b.pages {
 		if !p.dirty {
 			b.pageManager.FreePage(p.pageNum)
