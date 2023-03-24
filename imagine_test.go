@@ -39,5 +39,4 @@ func TestImageineMap(t *testing.T) {
 		DataFilePath:     dbfile,
 		WithCloseAndOpen: false,
 	}, t)
-
 }
