@@ -19,6 +19,10 @@ type IMapStorage interface {
 
 	Encode(ctx context.Context) ([]byte, error)
 	Decode(ctx context.Context, b []byte) (IMapStorage, error)
+
+	MergeMap(ctx context.Context, ims IMapStorage) error
+
+	Close(ctx context.Context) error
 }
 
 type Value interface {

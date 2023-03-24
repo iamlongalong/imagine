@@ -2,14 +2,15 @@ package imagine
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
+
+	json "github.com/json-iterator/go"
 )
 
 var insmmap IMapStorage = &MemMap{}
 
 type MemMapOpt struct {
-	ValueFunc func(ctx context.Context, b []byte) (Value, error)
+	ValueFunc ValueFunc
 }
 
 func NewMemMap(opt MemMapOpt) IMapStorage {
@@ -29,7 +30,7 @@ type MemMap struct {
 	m map[string]Value
 
 	// 从 bytes 到 value
-	valueFunc func(ctx context.Context, b []byte) (Value, error)
+	valueFunc ValueFunc
 }
 
 func (mm *MemMap) Has(ctx context.Context, key string) bool {
@@ -103,6 +104,22 @@ func (mm *MemMap) Encode(ctx context.Context) ([]byte, error) {
 	// 姑且先用 json encoder
 	return json.Marshal(mm.m)
 }
+
+func (mm *MemMap) MergeMap(ctx context.Context, ims IMapStorage) error {
+	// TODO 处理 回滚等问题
+	var err error
+	ims.Range(ctx, func(ctx context.Context, key string, value Value) bool {
+		err = dm.Set(ctx, key, value)
+		if err != nil {
+			return false
+		}
+
+		return true
+	})
+
+	return err
+}
+
 func (mm *MemMap) Decode(ctx context.Context, b []byte) (IMapStorage, error) {
 	mb := make(MapStrBytes)
 	err := json.Unmarshal(b, &mb)
@@ -110,16 +127,25 @@ func (mm *MemMap) Decode(ctx context.Context, b []byte) (IMapStorage, error) {
 		return nil, err
 	}
 
+	nmm := &MemMap{
+		valueFunc: mm.valueFunc,
+		m:         make(map[string]Value),
+	}
+
 	for k, v := range mb {
-		iv, err := mm.valueFunc(ctx, *v)
+		iv, err := nmm.valueFunc(ctx, *v)
 		if err != nil {
 			return nil, err
 		}
 
-		mm.m[k] = iv
+		nmm.m[k] = iv
 	}
 
-	return mm, nil
+	return nmm, nil
+}
+
+func (mm *MemMap) Close(ctx context.Context) error {
+	return nil
 }
 
 type BytesValue []byte

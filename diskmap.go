@@ -3,12 +3,13 @@ package imagine
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
+
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"sync"
+
+	json "github.com/json-iterator/go"
 
 	"github.com/pkg/errors"
 )
@@ -21,13 +22,37 @@ var (
 	ErrFileBlockSize  = errors.New("invalid file block size")
 	ErrInvalidPageNum = errors.New("invalid page num")
 
+	ErrPageAlreadyLoaded = errors.New("page already loaded")
+
 	dm IMapStorage = &DiskMap{}
 )
 
+func BuildDiskMapOpt(datafile, indexfile string, pagesize int, vf ValueFunc) (DiskMapOpt, error) {
+	opt := DiskMapOpt{}
+
+	df, err := os.OpenFile(datafile, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return opt, err
+	}
+
+	idxf, err := os.OpenFile(indexfile, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return opt, err
+	}
+
+	opt.DataFile = df
+	opt.IndexManager = idxf
+	opt.ValueFunc = vf
+	opt.PageSize = pagesize
+
+	return opt, nil
+}
+
 type DiskMapOpt struct {
-	ValueFunc    func(ctx context.Context, b []byte) (Value, error)
+	ValueFunc    ValueFunc
 	DataFile     *os.File
-	IndexManager io.ReadWriter
+	IndexManager IReaderWriterAt
+	PageSize     int
 }
 
 func NewDiskMap(opt DiskMapOpt) (IMapStorage, error) {
@@ -35,9 +60,25 @@ func NewDiskMap(opt DiskMapOpt) (IMapStorage, error) {
 		opt.ValueFunc = DecodeBytesValue
 	}
 
-	b, err := ioutil.ReadAll(opt.IndexManager)
+	bl := make([]byte, 8)
+	_, err := opt.IndexManager.Read(bl)
+	if err != nil && !errors.Is(err, io.EOF) { // 新创建索引则为 EOF
+		return nil, err
+	}
+
+	l := binary.BigEndian.Uint64(bl)
+
+	b := make([]byte, l)
+	n, err := opt.IndexManager.Read(b)
 	if err != nil {
 		return nil, err
+	}
+	if uint64(n) != l {
+		return nil, errors.New("index damaged")
+	}
+
+	if len(b) == 0 { // init
+		b = []byte("{}")
 	}
 
 	idxManager := NewKeyIndex()
@@ -46,8 +87,14 @@ func NewDiskMap(opt DiskMapOpt) (IMapStorage, error) {
 		return nil, err
 	}
 
+	if opt.PageSize <= 0 {
+		opt.PageSize = 512
+	}
+
+	idxManager.f = opt.IndexManager
+
 	pageManager, err := NewPageManager(PageManagerOpt{
-		PageSize: 512,
+		PageSize: opt.PageSize,
 		File:     opt.DataFile,
 	})
 	if err != nil {
@@ -66,7 +113,7 @@ type DiskMap struct {
 
 	pageManager *PageManager
 
-	valueFunc func(ctx context.Context, b []byte) (Value, error)
+	valueFunc ValueFunc
 }
 
 func (dm *DiskMap) Has(ctx context.Context, key string) bool {
@@ -130,8 +177,13 @@ func (dm *DiskMap) Set(ctx context.Context, key string, val Value) error {
 	if err != nil {
 		return errors.Wrap(err, baseErr.Error())
 	}
-	// 姑且这样用 block，用于释放多余 page
-	defer bl.Close()
+	// 姑且这样用 block，用于写block，并且释放多余 page
+	defer func() {
+		err := bl.Close()
+		if err != nil {
+			log.Printf("block close fail : %s\n", err)
+		}
+	}()
 
 	if n != len(b) {
 		return errors.Wrap(ErrUnexpectedEnd, baseErr.Error())
@@ -153,13 +205,20 @@ func (dm *DiskMap) Set(ctx context.Context, key string, val Value) error {
 
 func (dm *DiskMap) Del(ctx context.Context, key string) {
 	var baseErr = errors.New("del diskmap fail")
-	bl, err := dm.getBlock(ctx, key)
+
+	posi, ok := dm.indexManager.GetPosi(ctx, key)
+	if !ok {
+		return
+	}
+
+	p, err := dm.pageManager.getPages(posi, false)
 	if err != nil {
 		log.Println(errors.Wrap(err, baseErr.Error()))
 		return
 	}
 
-	bl.Free()
+	dm.pageManager.FreePages(p...)
+	dm.indexManager.Del(ctx, key)
 }
 
 func (dm *DiskMap) Range(ctx context.Context, f func(ctx context.Context, key string, value Value) bool) {
@@ -169,6 +228,37 @@ func (dm *DiskMap) Range(ctx context.Context, f func(ctx context.Context, key st
 func (dm *DiskMap) Encode(ctx context.Context) ([]byte, error) {
 	// TODO encode all
 	return nil, nil
+}
+
+// Close 关闭 diskmap
+func (dm *DiskMap) Close(ctx context.Context) error {
+	// 存储索引
+	err := dm.indexManager.save(ctx)
+	if err != nil {
+		return err
+	}
+
+	err = dm.indexManager.f.Close()
+	if err != nil {
+		return err
+	}
+
+	return dm.pageManager.file.Close()
+}
+
+func (dm *DiskMap) MergeMap(ctx context.Context, ims IMapStorage) error {
+	// TODO 处理 回滚等问题
+	var err error
+	ims.Range(ctx, func(ctx context.Context, key string, value Value) bool {
+		err = dm.Set(ctx, key, value)
+		if err != nil {
+			return false
+		}
+
+		return true
+	})
+
+	return err
 }
 
 func (dm *DiskMap) Decode(ctx context.Context, b []byte) (IMapStorage, error) {
@@ -195,14 +285,23 @@ type KeyIndex struct {
 	mu sync.RWMutex
 
 	m map[string]Posi
+
+	f IReaderWriterAt
 }
 
 func (ki *KeyIndex) Has(ctx context.Context, key string) bool {
 	ki.mu.RLock()
-	defer ki.mu.Unlock()
+	defer ki.mu.RUnlock()
 
 	_, ok := ki.m[key]
 	return ok
+}
+
+func (ki *KeyIndex) Del(ctx context.Context, key string) {
+	ki.mu.Lock()
+	defer ki.mu.Unlock()
+
+	delete(ki.m, key)
 }
 
 func (ki *KeyIndex) GetPosi(ctx context.Context, key string) (Posi, bool) {
@@ -215,7 +314,7 @@ func (ki *KeyIndex) GetPosi(ctx context.Context, key string) (Posi, bool) {
 
 func (ki *KeyIndex) SetPosi(ctx context.Context, key string, posi Posi) error {
 	ki.mu.Lock()
-	defer ki.mu.RUnlock()
+	defer ki.mu.Unlock()
 
 	ki.m[key] = posi
 
@@ -260,6 +359,23 @@ func (ki *KeyIndex) Encode(ctx context.Context) ([]byte, error) {
 	return json.Marshal(tm)
 }
 
+func (ki *KeyIndex) save(ctx context.Context) error {
+	b, err := ki.Encode(ctx)
+	if err != nil {
+		return err
+	}
+	bl := make([]byte, 8)
+	binary.BigEndian.PutUint64(bl, uint64(len(b)))
+
+	_, err = ki.f.WriteAt(bl, 0)
+	if err != nil {
+		return err
+	}
+
+	_, err = ki.f.WriteAt(b, 8)
+	return err
+}
+
 type Posi struct {
 	PageNum PageNum
 	Len     int
@@ -299,7 +415,7 @@ type PageManager struct {
 
 	pagesBitMap *BitMap
 
-	file *os.File
+	file IReaderWriterAt
 
 	PagesInfo
 
@@ -400,7 +516,7 @@ func getContinuousPages(pm *PageManager, pages int) (start, end int, ok bool) {
 	for i := 0; i < pm.PagesNum; i++ {
 		occupied := pm.pagesBitMap.Get(i)
 		if occupied {
-			startPage = i
+			startPage = i + 1
 			continue
 		} else if i-startPage+1 == pages {
 			found = true
@@ -421,17 +537,36 @@ func (pm *PageManager) GetBlock(po Posi) (*Block, error) {
 		return nil, ErrInvalidPageNum
 	}
 
-	pagesNum := (po.Len-1)/int(pm.PageSize) + 1
-
-	d := make([]byte, pagesNum*int(pm.PageSize))
-
-	n, err := pm.file.ReadAt(d, int64(pm.getOffset(po.PageNum)))
+	pages, err := pm.getPages(po, true)
 	if err != nil {
 		return nil, err
 	}
 
-	if n < po.Len {
-		return nil, errors.New("read failed size shrinked")
+	pagesNum := len(pages)
+
+	b := NewBlock(int(pm.getPagesSize(pagesNum)), pages)
+	b.filledLen = po.Len
+	b.pageManager = pm
+
+	return b, nil
+}
+
+func (pm *PageManager) getPages(po Posi, loaddata bool) ([]*Page, error) {
+	pagesNum := (po.Len-1)/int(pm.PageSize) + 1
+
+	var d []byte
+
+	if loaddata {
+		d = make([]byte, pagesNum*int(pm.PageSize))
+
+		n, err := pm.file.ReadAt(d, int64(pm.getOffset(po.PageNum)))
+		if err != nil {
+			return nil, err
+		}
+
+		if n < po.Len {
+			return nil, errors.New("read failed size shrinked")
+		}
 	}
 
 	pages := make([]*Page, pagesNum)
@@ -442,19 +577,29 @@ func (pm *PageManager) GetBlock(po Posi) (*Block, error) {
 	pageNum := po.PageNum
 	for _, p := range pages {
 		p.pageNum = pageNum
-		p.data = d[int(pageNum-po.PageNum)*int(pm.PageSize) : int(pageNum-po.PageNum+1)*int(pm.PageSize)]
+		if loaddata {
+			p.data = d[int(pageNum-po.PageNum)*int(pm.PageSize) : int(pageNum-po.PageNum+1)*int(pm.PageSize)]
+			p.loaded = true
+		}
 		p.pageSize = int(pm.PageSize)
 		pageNum++
 	}
 
-	b := NewBlock(int(pm.getPagesSize(pagesNum)), pages)
-	b.filledLen = po.Len
-
-	return b, nil
+	return pages, nil
 }
 
 func (pm *PageManager) getPagesSize(pagesNum int) int64 {
 	return int64(pm.PageSize) * int64(pagesNum)
+}
+
+func (pm *PageManager) loadPageData(pn PageNum, d []byte) (int, error) {
+	td := d
+
+	if len(d) > pm.PageSize {
+		td = d[0:pm.PageSize]
+	}
+
+	return pm.file.ReadAt(td, pm.getOffset(pn))
 }
 
 func (pm *PageManager) getOffset(pn PageNum) int64 {
@@ -490,20 +635,23 @@ func (pm *PageManager) Tidy() {
 	// todo
 }
 
-func (pm *PageManager) FreePage(pageNum PageNum) {
-	pm.pagesBitMap.UnSet(int(pageNum))
+func (pm *PageManager) FreePages(pages ...*Page) {
+	for _, page := range pages {
+		pm.pagesBitMap.UnSet(int(page.pageNum))
+	}
+}
+
+func (pm *PageManager) FreePageByNums(pageNums ...PageNum) {
+	for _, pageNum := range pageNums {
+		pm.pagesBitMap.UnSet(int(pageNum))
+	}
 }
 
 // WritePage
 func (pm *PageManager) writePage(p *Page) error {
-	// pm.file.
-	return nil
-
-}
-
-func (pm *PageManager) writeBlock(b *Block) error {
-	// TODO
-	return nil
+	off := pm.getOffset(p.pageNum)
+	_, err := pm.file.WriteAt(p.data, off)
+	return err
 }
 
 func (pm *PageManager) GetPageByPageNum(pagenum PageNum) (*Page, error) {
@@ -529,14 +677,35 @@ func (pm *PageManager) GetPageByPageNum(pagenum PageNum) (*Page, error) {
 }
 
 type Page struct {
+	pm *PageManager
+
 	pageNum  PageNum
 	pageSize int
 	dirty    bool
+
+	loaded bool
 
 	// f os.File
 
 	// TODO use mmap
 	data []byte
+}
+
+func (p *Page) LoadData() (n int, err error) {
+	if p.loaded {
+		return 0, ErrPageAlreadyLoaded
+	}
+
+	// todo, 不用 pagesize，而用 buffer
+	b := make([]byte, p.pageSize)
+	n, err = p.pm.loadPageData(p.pageNum, b)
+	if err != nil {
+		return 0, err
+	}
+	p.loaded = true
+	p.data = b
+
+	return n, nil
 }
 
 func (p *Page) ReadAll() (b []byte, err error) {
@@ -638,9 +807,7 @@ func (b *Block) GetFilledLength() int {
 
 // Free 完全释放该 block
 func (b *Block) Free() {
-	for _, p := range b.pages {
-		b.pageManager.FreePage(p.pageNum)
-	}
+	b.pageManager.FreePages(b.pages...)
 }
 
 func (b *Block) GetPosi() Posi {
@@ -670,27 +837,30 @@ func (b *Block) Write(d []byte) (n int, err error) {
 			return 0, err
 		}
 
+		idx += n
+
 		if len(d) == lastPosi {
 			break
 		}
 
-		idx += n
 	}
 
-	b.filledLen = n
+	b.filledLen = idx
 
-	return
+	return idx, nil
 }
 
 func (b *Block) Close() (err error) {
-	err = b.pageManager.writeBlock(b)
-	if err != nil {
-		return err
-	}
-
 	for _, p := range b.pages {
+		if p.dirty {
+			err = b.pageManager.writePage(p)
+			if err != nil {
+				return err
+			}
+		}
+
 		if !p.dirty {
-			b.pageManager.FreePage(p.pageNum)
+			b.pageManager.FreePages(p)
 			continue
 		}
 
@@ -701,4 +871,12 @@ func (b *Block) Close() (err error) {
 	}
 
 	return nil
+}
+
+type IReaderWriterAt interface {
+	io.Reader
+	io.ReaderAt
+	io.WriterAt
+	io.Writer
+	io.Closer
 }
