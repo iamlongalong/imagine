@@ -2,12 +2,13 @@ package imagine
 
 import (
 	"context"
+	"log"
 	"sync"
 
 	json "github.com/json-iterator/go"
 )
 
-var insmmap IMapStorage = &MemMap{}
+var mmap IMapStorage = &MemMap{}
 
 type MemMapOpt struct {
 	ValueFunc ValueFunc
@@ -111,6 +112,7 @@ func (mm *MemMap) MergeMap(ctx context.Context, ims IMapStorage) error {
 	ims.Range(ctx, func(ctx context.Context, key string, value Value) bool {
 		err = dm.Set(ctx, key, value)
 		if err != nil {
+			log.Printf("set map [%s] fail : %s", key, err)
 			return false
 		}
 

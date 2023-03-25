@@ -17,10 +17,11 @@ func TestImageineMap(t *testing.T) {
 	baseName := testDataDir + "longtest." + string(genRandomBytes(6))
 	dbfile := baseName + ".dm"
 	indexfile := baseName + ".dmx"
+	dmfile := baseName + ".dmb"
 
 	pagesize := 128
 
-	dmopt, err := BuildDiskMapOpt(dbfile, indexfile, pagesize, DecodeBytesValue)
+	dmopt, err := BuildDiskMapOpt(dbfile, indexfile, dmfile, pagesize, DecodeBytesValue)
 	assert.Nil(t, err)
 
 	opt := ImagineOption{

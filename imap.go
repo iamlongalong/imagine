@@ -3,6 +3,7 @@ package imagine
 import (
 	"context"
 	"errors"
+	"io"
 )
 
 var (
@@ -27,13 +28,16 @@ type IMapStorage interface {
 
 type Value interface {
 	Encode() ([]byte, error)
-	Decode(b []byte) error
 }
 
 type MapMerger interface {
 	Merge(f func(ctx context.Context, k string, val Value) error)
 }
 
-func x() {
-	// m := sync.Map{}
+type IReaderWriterAt interface {
+	io.Reader
+	io.ReaderAt
+	io.WriterAt
+	io.Writer
+	io.Closer
 }

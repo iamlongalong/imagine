@@ -3,6 +3,7 @@ package imagine
 import (
 	"context"
 	"encoding/binary"
+	"time"
 
 	"io"
 	"log"
@@ -27,7 +28,17 @@ var (
 	dm IMapStorage = &DiskMap{}
 )
 
-func BuildDiskMapOpt(datafile, indexfile string, pagesize int, vf ValueFunc) (DiskMapOpt, error) {
+func BuildDiskMapOptWithFile(datafile, bmfile *os.File, indexfile IReaderWriterAt, pagesize int, vf ValueFunc) DiskMapOpt {
+	return DiskMapOpt{
+		ValueFunc:    vf,
+		IndexManager: indexfile,
+		DataFile:     datafile,
+		BMFile:       bmfile,
+		PageSize:     pagesize,
+	}
+}
+
+func BuildDiskMapOpt(datafile, indexfile, bmfile string, pagesize int, vf ValueFunc) (DiskMapOpt, error) {
 	opt := DiskMapOpt{}
 
 	df, err := os.OpenFile(datafile, os.O_RDWR|os.O_CREATE, 0644)
@@ -40,7 +51,13 @@ func BuildDiskMapOpt(datafile, indexfile string, pagesize int, vf ValueFunc) (Di
 		return opt, err
 	}
 
+	bmf, err := os.OpenFile(bmfile, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return opt, err
+	}
+
 	opt.DataFile = df
+	opt.BMFile = bmf
 	opt.IndexManager = idxf
 	opt.ValueFunc = vf
 	opt.PageSize = pagesize
@@ -51,6 +68,7 @@ func BuildDiskMapOpt(datafile, indexfile string, pagesize int, vf ValueFunc) (Di
 type DiskMapOpt struct {
 	ValueFunc    ValueFunc
 	DataFile     *os.File
+	BMFile       *os.File
 	IndexManager IReaderWriterAt
 	PageSize     int
 }
@@ -96,6 +114,7 @@ func NewDiskMap(opt DiskMapOpt) (IMapStorage, error) {
 	pageManager, err := NewPageManager(PageManagerOpt{
 		PageSize: opt.PageSize,
 		File:     opt.DataFile,
+		BMFile:   opt.BMFile,
 	})
 	if err != nil {
 		return nil, err
@@ -414,6 +433,7 @@ type PageManager struct {
 	mu sync.Mutex
 
 	pagesBitMap *BitMap
+	bmFile      *os.File
 
 	file IReaderWriterAt
 
@@ -433,8 +453,9 @@ type PageManagerOpt struct {
 	PageSize     int
 	BaseGrowStep int
 
-	File *os.File // 数据文件
-
+	File   *os.File // 数据文件
+	BMFile *os.File // bitmap file
+	// BitMap *BitMap
 }
 
 // 索引文件
@@ -452,7 +473,8 @@ func (idf *IndexFile) Write(b []byte) (n int, err error) {
 
 func NewPageManager(opt PageManagerOpt) (*PageManager, error) {
 	pm := &PageManager{
-		file: opt.File,
+		file:   opt.File,
+		bmFile: opt.BMFile,
 	}
 
 	pm.PageSize = opt.PageSize
@@ -469,10 +491,23 @@ func NewPageManager(opt PageManagerOpt) (*PageManager, error) {
 		return nil, ErrFileBlockSize
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	bm, err := ReadBitMapFromFile(ctx, opt.BMFile)
+	if err != nil {
+		return nil, err
+	}
+
 	pm.PagesNum = int(fsize) / pm.PageSize
-	pm.pagesBitMap = NewBitMap(pm.PagesNum)
+
+	pm.pagesBitMap = bm
 
 	return pm, nil
+}
+
+func (pm *PageManager) Close(ctx context.Context) error {
+	return WriteBitMapToFile(ctx, pm.pagesBitMap, pm.bmFile)
 }
 
 // GetBlockBySize 按所需大小获取 block
@@ -871,12 +906,4 @@ func (b *Block) Close() (err error) {
 	}
 
 	return nil
-}
-
-type IReaderWriterAt interface {
-	io.Reader
-	io.ReaderAt
-	io.WriterAt
-	io.Writer
-	io.Closer
 }
