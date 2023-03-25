@@ -43,15 +43,21 @@ log.Println(v)
 
 - [ ] force valuer type (bind valuer with map namespace)
 - [ ] generat valuer with pb/gob/json/msgpack
+- [ ] implement compresser
 - [ ] default valuer (maybe……)
 
 - [ ] add server implement
 - [ ] add server client
+- [ ] implement listener
+- [ ] support package db and index
+- [ ] use mmap for disk cache
 - [ ] benchmark and more tests
 - [ ] examples and documents
 
 - [ ] optimize the index file structure (data file also)
 - [ ] with relations define in model (like join query)
+- [ ] UI viewer for monitoring
 - [ ] add remote storage map
 - [ ] add primary and standby structure
 - [ ] add cluster structure
+- [ ] with crdt support
