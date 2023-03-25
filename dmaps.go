@@ -179,7 +179,12 @@ func (d *Dmaps) MustGetMap(ctx context.Context, ns string) IMapStorage {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	return d.maps[ns]
+	m, ok := d.maps[ns]
+	if !ok {
+		panic(errors.Errorf("must get map %s failed", ns))
+	}
+
+	return m
 }
 
 func (d *Dmaps) GetMap(ctx context.Context, ns string) (IMapStorage, bool) {
