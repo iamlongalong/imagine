@@ -9,6 +9,9 @@
       },
       "Data": {
         "DataFile": "defaultdata"
+      },
+      "Valuer": {
+        "Name": "bytes_valuer"
       }
     },
     {
@@ -20,6 +23,9 @@
       },
       "Data": {
         "DataFile": "defaultdata"
+      },
+      "Valuer": {
+        "Name": "bytes_valuer"
       },
       "Options": {
         "xxx": "for diffrent engine"
