@@ -3,7 +3,10 @@ module imagine
 go 1.18
 
 require (
+	github.com/bluele/gcache v0.0.2
+	github.com/imdario/mergo v0.3.15
 	github.com/json-iterator/go v1.1.12
+	github.com/klauspost/compress v1.16.3
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.8.2
 )

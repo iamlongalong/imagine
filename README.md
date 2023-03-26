@@ -38,16 +38,16 @@ log.Println(v)
 
 # TODOs
 - [x] ~~add valuer registry~~ [2023-03-26]
-- [ ] memmap save to diskmap
+- [x] ~~memmap save to diskmap~~ [2023-03-26]
+- [ ] implement merger
 - [ ] wal for recover
-
-- [ ] force valuer type (bind valuer with map namespace)
-- [ ] generat valuer with pb/~~gob/json~~/msgpack
+</br>
+- [x] ~~force valuer type (bind valuer with map namespace)~~ [2023-03-26]
+- [ ] generate valuer with pb/~~gob/json~~/msgpack
 - [ ] implement compresser
-- [ ] default valuer (maybe……)
 - [ ] valuer with wasm
 - [ ] use pb for internal struct marshaller (using json and gob now)
-
+</br>
 - [ ] add server implement
 - [ ] add server client
 - [ ] implement listener
@@ -56,7 +56,7 @@ log.Println(v)
 - [ ] dmap cache with ttl
 - [ ] benchmark and more tests
 - [ ] examples and documents
-
+</br>
 - [ ] optimize the index file structure (data file also)
 - [ ] with relations define in model (like join query)
 - [ ] UI viewer for monitoring

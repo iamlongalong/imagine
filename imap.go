@@ -50,10 +50,6 @@ type Decoder interface {
 	DecodeTo(ptr interface{}) error
 }
 
-// type MapMerger interface {
-// 	Merge(f func(ctx context.Context, k string, val Valuer) error)
-// }
-
 type IReaderWriterAt interface {
 	io.Reader
 	io.ReaderAt

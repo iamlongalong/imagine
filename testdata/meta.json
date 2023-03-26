@@ -12,6 +12,11 @@
       },
       "Valuer": {
         "Name": "bytes_valuer"
+      },
+      "CacheManager": {
+        "Enable": true,
+        "CacheSize": 200,
+        "ExpirationSec": 600
       }
     },
     {
@@ -26,6 +31,9 @@
       },
       "Valuer": {
         "Name": "bytes_valuer"
+      },
+      "Cache": {
+        "Enable": false
       },
       "Options": {
         "xxx": "for diffrent engine"

@@ -2,11 +2,11 @@ package imagine
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"os"
 	"path"
 	"sync"
+	"time"
 
 	"github.com/pkg/errors"
 )
@@ -17,95 +17,6 @@ var (
 
 type DmapsOption struct {
 	Dir string
-}
-
-type DmapsMeta struct {
-	Maps      []DmapsMapMeta
-	DataFiles []DmapsDataFileMeta
-}
-
-func (dm *DmapsMeta) GetMapMeta(name string) (DmapsMapMeta, bool) {
-	for _, m := range dm.Maps {
-		if m.Name == name {
-			return m, true
-		}
-	}
-
-	return DmapsMapMeta{}, false
-}
-
-func (dm *DmapsMeta) GetDataFileMeta(name string) (DmapsDataFileMeta, bool) {
-	for _, m := range dm.DataFiles {
-		if m.Name == name {
-			return m, true
-		}
-	}
-
-	return DmapsDataFileMeta{}, false
-}
-
-type DmapsMapMeta struct {
-	Name   string
-	Engine string
-	Index  struct {
-		FileName  string
-		IndexMeta interface{}
-	}
-	Data struct {
-		DataFile string
-	}
-	Valuer struct {
-		Name string
-	}
-	Options json.RawMessage
-}
-
-type DmapsDataFileMeta struct {
-	Name           string
-	FileName       string
-	PageSize       int
-	PagesNum       int
-	PageBitMapFile string
-
-	file   *os.File
-	bmfile *os.File // 后端可以改成 file 中的一个段
-}
-
-func (dfm *DmapsDataFileMeta) BuildDataFile(basePath string) error {
-	f, err := os.OpenFile(path.Join(basePath, dfm.FileName), os.O_RDWR|os.O_CREATE, 0644)
-	if err != nil {
-		return err
-	}
-
-	bf, err := os.OpenFile(path.Join(basePath, dfm.PageBitMapFile), os.O_RDWR|os.O_CREATE, 0644)
-	if err != nil {
-		return err
-	}
-
-	dfm.bmfile = bf
-	dfm.file = f
-
-	return nil
-}
-
-func getDmapsMeta(dir string) (*DmapsMeta, error) {
-	metaFile := &DmapsMeta{
-		Maps:      make([]DmapsMapMeta, 0),
-		DataFiles: make([]DmapsDataFileMeta, 0),
-	}
-
-	metafilePath := path.Join(dir, "meta.json")
-	mb, err := os.ReadFile(metafilePath)
-	if err != nil {
-		return nil, errors.Wrap(err, "open meta file fail")
-	}
-
-	err = json.Unmarshal(mb, metaFile)
-	if err != nil {
-		return nil, errors.Wrap(err, "unmashal metafile fail")
-	}
-
-	return metaFile, nil
 }
 
 func NewDmaps(opt DmapsOption) (*Dmaps, error) {
@@ -185,7 +96,12 @@ func NewDmaps(opt DmapsOption) (*Dmaps, error) {
 			}
 
 			dm, err := NewImagineMap(ImagineOption{
-				MemMapOpt:  MemMapOpt{ValueFunc: vfunc},
+				MemMapOpt: MemMapOpt{ValueFunc: vfunc, CacheOpt: CacheOption{
+					Enable:     mm.CacheManager.Enable,
+					CacheSize:  mm.CacheManager.CacheSize,
+					Expiration: time.Duration(mm.CacheManager.ExpirationSec) * time.Second,
+				}},
+
 				DiskMapOpt: BuildDiskMapOptWithFile(fm.file, fm.bmfile, idxf, fm.PageSize, vfunc),
 			})
 
