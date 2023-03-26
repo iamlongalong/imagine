@@ -24,6 +24,26 @@ type DmapsMeta struct {
 	DataFiles []DmapsDataFileMeta
 }
 
+func (dm *DmapsMeta) GetMapMeta(name string) (DmapsMapMeta, bool) {
+	for _, m := range dm.Maps {
+		if m.Name == name {
+			return m, true
+		}
+	}
+
+	return DmapsMapMeta{}, false
+}
+
+func (dm *DmapsMeta) GetDataFileMeta(name string) (DmapsDataFileMeta, bool) {
+	for _, m := range dm.DataFiles {
+		if m.Name == name {
+			return m, true
+		}
+	}
+
+	return DmapsDataFileMeta{}, false
+}
+
 type DmapsMapMeta struct {
 	Name   string
 	Engine string
@@ -34,6 +54,10 @@ type DmapsMapMeta struct {
 	Data struct {
 		DataFile string
 	}
+	Valuer struct {
+		Name string
+	}
+	Options json.RawMessage
 }
 
 type DmapsDataFileMeta struct {
@@ -64,21 +88,30 @@ func (dfm *DmapsDataFileMeta) BuildDataFile(basePath string) error {
 	return nil
 }
 
-func NewDmaps(opt DmapsOption) (*Dmaps, error) {
-	metafilePath := path.Join(opt.Dir, "meta.json")
-	mb, err := os.ReadFile(metafilePath)
-	if err != nil {
-		return nil, errors.Wrap(err, "open meta file fail")
-	}
-
+func getDmapsMeta(dir string) (*DmapsMeta, error) {
 	metaFile := &DmapsMeta{
 		Maps:      make([]DmapsMapMeta, 0),
 		DataFiles: make([]DmapsDataFileMeta, 0),
 	}
 
+	metafilePath := path.Join(dir, "meta.json")
+	mb, err := os.ReadFile(metafilePath)
+	if err != nil {
+		return nil, errors.Wrap(err, "open meta file fail")
+	}
+
 	err = json.Unmarshal(mb, metaFile)
 	if err != nil {
 		return nil, errors.Wrap(err, "unmashal metafile fail")
+	}
+
+	return metaFile, nil
+}
+
+func NewDmaps(opt DmapsOption) (*Dmaps, error) {
+	metaFile, err := getDmapsMeta(opt.Dir)
+	if err != nil {
+		return nil, err
 	}
 
 	maps := map[string]IMapStorage{}
@@ -103,10 +136,18 @@ func NewDmaps(opt DmapsOption) (*Dmaps, error) {
 			return nil, errors.Wrapf(err, "repeated map namespace : %s", mm.Name)
 		}
 
+		var vfunc ValueFunc
+		var err error
+
+		vfunc, err = GetValuer(mm.Valuer.Name)
+		if err != nil {
+			return nil, errors.Wrapf(err, "get map [%s] valuer [%s] fail", mm.Name, mm.Valuer.Name)
+		}
+
 		// 这里将来可以做成注册机制，可自定义实现
 		switch mm.Engine {
 		case "inmemory":
-			im := NewMemMap(MemMapOpt{ValueFunc: DecodeBytesValue})
+			im := NewMemMap(MemMapOpt{ValueFunc: vfunc})
 			maps[mm.Name] = im
 
 		case "disk":
@@ -122,7 +163,7 @@ func NewDmaps(opt DmapsOption) (*Dmaps, error) {
 				return nil, errors.Wrapf(err, "open index file %s of %s", mm.Index.FileName, mm.Name)
 			}
 
-			opt := BuildDiskMapOptWithFile(fm.file, fm.bmfile, idxf, fm.PageSize, DecodeBytesValue)
+			opt := BuildDiskMapOptWithFile(fm.file, fm.bmfile, idxf, fm.PageSize, vfunc)
 			dm, err := NewDiskMap(opt)
 			if err != nil {
 				return nil, errors.Wrapf(err, "new disk map fail of %s", mm.Name)
@@ -144,8 +185,8 @@ func NewDmaps(opt DmapsOption) (*Dmaps, error) {
 			}
 
 			dm, err := NewImagineMap(ImagineOption{
-				MemMapOpt:  MemMapOpt{ValueFunc: DecodeBytesValue},
-				DiskMapOpt: BuildDiskMapOptWithFile(fm.file, fm.bmfile, idxf, fm.PageSize, DecodeBytesValue),
+				MemMapOpt:  MemMapOpt{ValueFunc: vfunc},
+				DiskMapOpt: BuildDiskMapOptWithFile(fm.file, fm.bmfile, idxf, fm.PageSize, vfunc),
 			})
 
 			if err != nil {

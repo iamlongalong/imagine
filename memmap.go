@@ -82,7 +82,7 @@ func (mm *MemMap) Encode(ctx context.Context) ([]byte, error) {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
 
-	tars := make(MapStrBytes, len(mm.m))
+	tars := make(mapStrBytes, len(mm.m))
 
 	var err error
 
@@ -123,7 +123,7 @@ func (mm *MemMap) MergeMap(ctx context.Context, ims IMapStorage) error {
 }
 
 func (mm *MemMap) Decode(ctx context.Context, b []byte) (IMapStorage, error) {
-	mb := make(MapStrBytes)
+	mb := make(mapStrBytes)
 	err := json.Unmarshal(b, &mb)
 	if err != nil {
 		return nil, err
@@ -150,25 +150,4 @@ func (mm *MemMap) Close(ctx context.Context) error {
 	return nil
 }
 
-type BytesValue []byte
-
-func (be *BytesValue) Encode() ([]byte, error) {
-	return *be, nil
-}
-
-func (be *BytesValue) Decode(b []byte) error {
-	*be = b
-	return nil
-}
-
-func DecodeBytesValue(ctx context.Context, b []byte) (Value, error) {
-	bv := BytesValue(b)
-	return &bv, nil
-}
-
-func ConvertBytesValue(b []byte) *BytesValue {
-	bv := BytesValue(b)
-	return &bv
-}
-
-type MapStrBytes map[string]*BytesValue
+type mapStrBytes map[string]*BytesValue

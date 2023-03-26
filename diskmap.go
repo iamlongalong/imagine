@@ -262,7 +262,7 @@ func (dm *DiskMap) Close(ctx context.Context) error {
 		return err
 	}
 
-	return dm.pageManager.file.Close()
+	return dm.pageManager.Close(ctx)
 }
 
 func (dm *DiskMap) MergeMap(ctx context.Context, ims IMapStorage) error {
@@ -341,7 +341,7 @@ func (ki *KeyIndex) SetPosi(ctx context.Context, key string, posi Posi) error {
 }
 
 func (ki *KeyIndex) Decode(b []byte) error {
-	bm := MapStrBytes{}
+	bm := mapStrBytes{}
 
 	err := json.Unmarshal(b, &bm)
 	if err != nil {
@@ -364,7 +364,7 @@ func (ki *KeyIndex) Decode(b []byte) error {
 }
 
 func (ki *KeyIndex) Encode(ctx context.Context) ([]byte, error) {
-	tm := make(MapStrBytes, len(ki.m))
+	tm := make(mapStrBytes, len(ki.m))
 
 	for k, p := range ki.m {
 		b, err := p.Encode()
@@ -425,10 +425,6 @@ func (p *Posi) Encode() ([]byte, error) {
 	return b, nil
 }
 
-type IFile interface {
-	Open(ctx context.Context, fpath string) os.File
-}
-
 type PageManager struct {
 	mu sync.Mutex
 
@@ -440,6 +436,8 @@ type PageManager struct {
 	PagesInfo
 
 	baseGrowStep int
+
+	once sync.Once
 }
 
 type PagesInfo struct {
@@ -507,7 +505,17 @@ func NewPageManager(opt PageManagerOpt) (*PageManager, error) {
 }
 
 func (pm *PageManager) Close(ctx context.Context) error {
-	return WriteBitMapToFile(ctx, pm.pagesBitMap, pm.bmFile)
+	berr := BundleErr{}
+
+	pm.once.Do(func() {
+		err := WriteBitMapToFile(ctx, pm.pagesBitMap, pm.bmFile)
+		berr.Add(err)
+
+		err = pm.bmFile.Close()
+		berr.Add(err)
+	})
+
+	return berr.Error()
 }
 
 // GetBlockBySize 按所需大小获取 block

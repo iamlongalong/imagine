@@ -14,6 +14,12 @@ func TestDmaps(t *testing.T) {
 	assert.Nil(t, err)
 	defer d.Close(ctx)
 
+	// dm, err := getDmapsMeta("testdata")
+	// assert.Nil(t, err)
+
+	// mm, ok := dm.GetMapMeta("helloworld")
+	// assert.True(t, ok)
+
 	hd := d.MustGetMap(ctx, "helloworld")
 	normalMapTest(ctx, normalMapOpt{
 		Map: hd,
