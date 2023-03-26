@@ -12,14 +12,20 @@ import (
 
 func TestPageManager(t *testing.T) {
 	fp := "longtest.db"
+	bmfp := "longtest.dbm"
 
 	f, err := os.OpenFile(fp, os.O_RDWR|os.O_CREATE, 0644)
+	assert.Nil(t, err)
+
+	bmf, err := os.OpenFile(bmfp, os.O_RDWR|os.O_CREATE, 0644)
 	assert.Nil(t, err)
 
 	pm, err := NewPageManager(PageManagerOpt{
 		PageSize: 512,
 		File:     f,
+		BMFile:   bmf,
 	})
+	defer pm.Close(context.Background())
 
 	assert.Nil(t, err)
 	d1 := "hello longalong d1"
@@ -44,12 +50,18 @@ func TestDiskMap(t *testing.T) {
 	ctx := context.Background()
 
 	testDataDir := "./test/"
-	os.Mkdir(testDataDir, 0755)
+	err := os.MkdirAll(testDataDir, 0755)
+	assert.Nil(t, err)
 
 	baseName := testDataDir + "longtest." + string(genRandomBytes(6))
 
 	dbfile := baseName + ".dm"
 	f, err := os.OpenFile(dbfile, os.O_RDWR|os.O_CREATE, 0644)
+	assert.Nil(t, err)
+	defer f.Close()
+
+	bmfile := baseName + ".dmb"
+	bmf, err := os.OpenFile(bmfile, os.O_RDWR|os.O_CREATE, 0644)
 	assert.Nil(t, err)
 	defer f.Close()
 
@@ -63,6 +75,7 @@ func TestDiskMap(t *testing.T) {
 		DataFile:     f,
 		IndexManager: idxf,
 		PageSize:     pagesize,
+		BMFile:       bmf,
 	})
 	assert.Nil(t, err)
 
@@ -73,6 +86,7 @@ func TestDiskMap(t *testing.T) {
 		IdxFilePath:      indexfile,
 		DataFilePath:     dbfile,
 		WithCloseAndOpen: true,
+		BMFilePath:       bmfile,
 	}, t)
 
 }
@@ -83,6 +97,7 @@ type normalMapOpt struct {
 	WithCloseAndOpen bool
 	IdxFilePath      string
 	DataFilePath     string
+	BMFilePath       string
 }
 
 func normalMapTest(ctx context.Context, opt normalMapOpt, t *testing.T) {
@@ -182,10 +197,15 @@ func normalMapTest(ctx context.Context, opt normalMapOpt, t *testing.T) {
 		assert.Nil(t, err)
 		defer nidxf.Close()
 
+		bmf, err := os.OpenFile(opt.BMFilePath, os.O_RDWR|os.O_CREATE, 0644)
+		assert.Nil(t, err)
+		defer bmf.Close()
+
 		ndm, err := NewDiskMap(DiskMapOpt{
 			DataFile:     nf,
 			IndexManager: nidxf,
 			PageSize:     opt.PageSize,
+			BMFile:       bmf,
 		})
 		assert.Nil(t, err)
 

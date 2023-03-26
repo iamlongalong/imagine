@@ -64,7 +64,7 @@ func TestMemMapBytesVal(t *testing.T) {
 	tmv1, err := tm.Get(ctx, k1)
 	assert.Nil(t, err)
 
-	tmb1b, err := tmv1.Encode()
+	tmb1b, err := tmv1.Encoder().Encode()
 	assert.Nil(t, err)
 	assert.Equal(t, ov1, tmb1b)
 

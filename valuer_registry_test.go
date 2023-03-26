@@ -64,7 +64,7 @@ func TestJsonValuer(t *testing.T) {
 
 		xm := map[string]interface{}{}
 
-		err = v.Decode(&xm)
+		err = v.DecodeTo(&xm)
 		assert.Nil(t, err)
 
 		assert.EqualValues(t, xt.Expect, xm, 0)

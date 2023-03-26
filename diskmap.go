@@ -1,16 +1,16 @@
 package imagine
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/gob"
 	"time"
 
 	"io"
 	"log"
 	"os"
 	"sync"
-
-	json "github.com/json-iterator/go"
 
 	"github.com/pkg/errors"
 )
@@ -95,10 +95,6 @@ func NewDiskMap(opt DiskMapOpt) (IMapStorage, error) {
 		return nil, errors.New("index damaged")
 	}
 
-	if len(b) == 0 { // init
-		b = []byte("{}")
-	}
-
 	idxManager := NewKeyIndex()
 	err = idxManager.Decode(b)
 	if err != nil {
@@ -139,7 +135,7 @@ func (dm *DiskMap) Has(ctx context.Context, key string) bool {
 	return dm.indexManager.Has(ctx, key)
 }
 
-func (dm *DiskMap) Get(ctx context.Context, key string) (Value, error) {
+func (dm *DiskMap) Get(ctx context.Context, key string) (Valuer, error) {
 	var baseErr = errors.New("get diskmap fail")
 
 	block, err := dm.getBlock(ctx, key)
@@ -161,10 +157,10 @@ func (dm *DiskMap) Get(ctx context.Context, key string) (Value, error) {
 	return v, err
 }
 
-func (dm *DiskMap) Set(ctx context.Context, key string, val Value) error {
+func (dm *DiskMap) Set(ctx context.Context, key string, val Valuer) error {
 	var baseErr = errors.New("set diskmap fail")
 
-	b, err := val.Encode()
+	b, err := val.Encoder().Encode()
 	if err != nil {
 		return errors.Wrap(err, baseErr.Error())
 	}
@@ -240,7 +236,7 @@ func (dm *DiskMap) Del(ctx context.Context, key string) {
 	dm.indexManager.Del(ctx, key)
 }
 
-func (dm *DiskMap) Range(ctx context.Context, f func(ctx context.Context, key string, value Value) bool) {
+func (dm *DiskMap) Range(ctx context.Context, f func(ctx context.Context, key string, value Valuer) bool) {
 	// TODO range
 }
 
@@ -268,7 +264,7 @@ func (dm *DiskMap) Close(ctx context.Context) error {
 func (dm *DiskMap) MergeMap(ctx context.Context, ims IMapStorage) error {
 	// TODO 处理 回滚等问题
 	var err error
-	ims.Range(ctx, func(ctx context.Context, key string, value Value) bool {
+	ims.Range(ctx, func(ctx context.Context, key string, value Valuer) bool {
 		err = dm.Set(ctx, key, value)
 		if err != nil {
 			return false
@@ -341,22 +337,29 @@ func (ki *KeyIndex) SetPosi(ctx context.Context, key string, posi Posi) error {
 }
 
 func (ki *KeyIndex) Decode(b []byte) error {
-	bm := mapStrBytes{}
+	tm := make(map[string]Posi)
 
-	err := json.Unmarshal(b, &bm)
+	if len(b) == 0 {
+		ki.m = tm
+		return nil
+	}
+
+	br := bytes.NewReader(b)
+	d := gob.NewDecoder(br)
+
+	err := d.Decode(&tm)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "decode index fail")
 	}
-	tm := make(map[string]Posi, len(bm))
 
-	for k, bv := range bm {
-		po, err := DecodePosi(*bv)
-		if err != nil {
-			return err
-		}
+	// for k, bv := range bm {
+	// 	po, err := DecodePosi(bv)
+	// 	if err != nil {
+	// 		return err
+	// 	}
 
-		tm[k] = po
-	}
+	// 	tm[k] = po
+	// }
 
 	ki.m = tm
 
@@ -364,18 +367,26 @@ func (ki *KeyIndex) Decode(b []byte) error {
 }
 
 func (ki *KeyIndex) Encode(ctx context.Context) ([]byte, error) {
-	tm := make(mapStrBytes, len(ki.m))
+	// tm := make(mapStrBytes, len(ki.m))
 
-	for k, p := range ki.m {
-		b, err := p.Encode()
-		if err != nil {
-			return nil, err
-		}
+	// for k, p := range ki.m {
+	// 	b, err := p.Encode()
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
 
-		tm[k] = ConvertBytesValue(b)
+	// 	tm[k] = b
+	// }
+
+	tb := bytes.NewBuffer(nil)
+
+	enc := gob.NewEncoder(tb)
+	err := enc.Encode(ki.m)
+	if err != nil {
+		return nil, errors.Wrap(err, "encode index fail")
 	}
 
-	return json.Marshal(tm)
+	return tb.Bytes(), nil
 }
 
 func (ki *KeyIndex) save(ctx context.Context) error {
@@ -400,6 +411,7 @@ type Posi struct {
 	Len     int
 }
 
+// DecodePosi 姑且不自己做decode了，用 gob
 func DecodePosi(b []byte) (Posi, error) {
 	return Posi{}.Decode(b)
 }

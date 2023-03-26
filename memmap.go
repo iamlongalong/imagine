@@ -20,7 +20,7 @@ func NewMemMap(opt MemMapOpt) IMapStorage {
 	}
 
 	return &MemMap{
-		m:         make(map[string]Value, 0),
+		m:         make(map[string]Valuer, 0),
 		valueFunc: opt.ValueFunc,
 	}
 }
@@ -28,7 +28,7 @@ func NewMemMap(opt MemMapOpt) IMapStorage {
 type MemMap struct {
 	mu sync.RWMutex
 
-	m map[string]Value
+	m map[string]Valuer
 
 	// 从 bytes 到 value
 	valueFunc ValueFunc
@@ -42,7 +42,7 @@ func (mm *MemMap) Has(ctx context.Context, key string) bool {
 	return ok
 }
 
-func (mm *MemMap) Get(ctx context.Context, key string) (Value, error) {
+func (mm *MemMap) Get(ctx context.Context, key string) (Valuer, error) {
 	mm.mu.RLock()
 	defer mm.mu.RUnlock()
 
@@ -53,7 +53,7 @@ func (mm *MemMap) Get(ctx context.Context, key string) (Value, error) {
 	return nil, ErrValueNotExist
 }
 
-func (mm *MemMap) Set(ctx context.Context, key string, val Value) error {
+func (mm *MemMap) Set(ctx context.Context, key string, val Valuer) error {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
 
@@ -69,7 +69,7 @@ func (mm *MemMap) Del(ctx context.Context, key string) {
 	delete(mm.m, key)
 }
 
-func (mm *MemMap) Range(ctx context.Context, f func(ctx context.Context, key string, value Value) bool) {
+func (mm *MemMap) Range(ctx context.Context, f func(ctx context.Context, key string, value Valuer) bool) {
 	// TODO 并发问题
 	for k, v := range mm.m {
 		if !f(ctx, k, v) {
@@ -86,15 +86,15 @@ func (mm *MemMap) Encode(ctx context.Context) ([]byte, error) {
 
 	var err error
 
-	mm.Range(ctx, func(ctx context.Context, key string, value Value) bool {
+	mm.Range(ctx, func(ctx context.Context, key string, value Valuer) bool {
 		var b []byte
 
-		b, err = value.Encode()
+		b, err = value.Encoder().Encode()
 		if err != nil {
 			return false
 		}
 
-		tars[key] = ConvertBytesValue(b)
+		tars[key] = b
 		return true
 	})
 
@@ -109,7 +109,7 @@ func (mm *MemMap) Encode(ctx context.Context) ([]byte, error) {
 func (mm *MemMap) MergeMap(ctx context.Context, ims IMapStorage) error {
 	// TODO 处理 回滚等问题
 	var err error
-	ims.Range(ctx, func(ctx context.Context, key string, value Value) bool {
+	ims.Range(ctx, func(ctx context.Context, key string, value Valuer) bool {
 		err = dm.Set(ctx, key, value)
 		if err != nil {
 			log.Printf("set map [%s] fail : %s", key, err)
@@ -131,11 +131,11 @@ func (mm *MemMap) Decode(ctx context.Context, b []byte) (IMapStorage, error) {
 
 	nmm := &MemMap{
 		valueFunc: mm.valueFunc,
-		m:         make(map[string]Value),
+		m:         make(map[string]Valuer),
 	}
 
 	for k, v := range mb {
-		iv, err := nmm.valueFunc(ctx, *v)
+		iv, err := nmm.valueFunc(ctx, []byte(v))
 		if err != nil {
 			return nil, err
 		}
@@ -150,4 +150,4 @@ func (mm *MemMap) Close(ctx context.Context) error {
 	return nil
 }
 
-type mapStrBytes map[string]*BytesValue
+type mapStrBytes map[string]json.RawMessage

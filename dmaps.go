@@ -244,7 +244,7 @@ func (d *Dmaps) Has(ctx context.Context, ns string, key string) bool {
 	return im.Has(ctx, key)
 }
 
-func (d *Dmaps) Get(ctx context.Context, ns string, key string) (Value, error) {
+func (d *Dmaps) Get(ctx context.Context, ns string, key string) (Valuer, error) {
 	im, ok := d.GetMap(ctx, ns)
 	if !ok {
 		return nil, ErrMapNotFound
@@ -252,7 +252,7 @@ func (d *Dmaps) Get(ctx context.Context, ns string, key string) (Value, error) {
 	return im.Get(ctx, key)
 }
 
-func (d *Dmaps) Set(ctx context.Context, ns string, key string, val Value) error {
+func (d *Dmaps) Set(ctx context.Context, ns string, key string, val Valuer) error {
 	im, ok := d.GetMap(ctx, ns)
 	if !ok {
 		return ErrMapNotFound
@@ -267,7 +267,7 @@ func (d *Dmaps) Del(ctx context.Context, ns string, key string) {
 
 	im.Del(ctx, key)
 }
-func (d *Dmaps) Range(ctx context.Context, ns string, f func(ctx context.Context, key string, value Value) bool) {
+func (d *Dmaps) Range(ctx context.Context, ns string, f func(ctx context.Context, key string, value Valuer) bool) {
 	im, ok := d.GetMap(ctx, ns)
 	if !ok {
 		return

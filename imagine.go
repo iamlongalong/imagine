@@ -4,14 +4,16 @@ import (
 	"context"
 )
 
-type ValueFunc = func(ctx context.Context, b []byte) (Value, error)
-type RangeFunc = func(ctx context.Context, key string, value Value) bool
-
 var im IMapStorage = &ImagineMap{}
 
+// 姑且先用 func 吧，之后可以结合 ValuerFactory 看看
+type ValueFunc = func(ctx context.Context, b []byte) (Valuer, error)
+
+type RangeFunc = func(ctx context.Context, key string, val Valuer) bool
+
 type OnHas = func(ctx context.Context, key string) (ok bool, has bool)
-type OnGet = func(ctx context.Context, key string) (ok bool, val Value, err error)
-type OnSet = func(ctx context.Context, key string, val Value) (ok bool, err error)
+type OnGet = func(ctx context.Context, key string) (ok bool, val Valuer, err error)
+type OnSet = func(ctx context.Context, key string, val Valuer) (ok bool, err error)
 type OnDel = func(ctx context.Context, key string) (ok bool)
 type OnRange = func(ctx context.Context, orifunc RangeFunc) (ok bool, f RangeFunc)
 type OnEncode = func(ctx context.Context) (ok bool, b []byte, err error)
@@ -20,8 +22,8 @@ type OnMergeMap = func(ctx context.Context, ims IMapStorage) (ok bool, err error
 type OnClose = func(ctx context.Context) (ok bool, err error)
 
 type CBHas = func(ctx context.Context, key string, has bool)
-type CBGet = func(ctx context.Context, key string, val Value, err error)
-type CBSet = func(ctx context.Context, key string, val Value, err error)
+type CBGet = func(ctx context.Context, key string, val Valuer, err error)
+type CBSet = func(ctx context.Context, key string, val Valuer, err error)
 type CBDel = func(ctx context.Context, key string)
 type CBRange = func(ctx context.Context, rangedKeys map[string]struct{})
 type CBEncode = func(ctx context.Context, b []byte, err error)
@@ -63,10 +65,10 @@ func (iof *ImageOnFuncOption) Valid() {
 		iof.OnHas = func(ctx context.Context, key string) (ok bool, has bool) { return false, false }
 	}
 	if iof.OnGet == nil {
-		iof.OnGet = func(ctx context.Context, key string) (ok bool, val Value, err error) { return false, nil, nil }
+		iof.OnGet = func(ctx context.Context, key string) (ok bool, val Valuer, err error) { return false, nil, nil }
 	}
 	if iof.OnSet == nil {
-		iof.OnSet = func(ctx context.Context, key string, val Value) (ok bool, err error) { return false, nil }
+		iof.OnSet = func(ctx context.Context, key string, val Valuer) (ok bool, err error) { return false, nil }
 	}
 	if iof.OnDel == nil {
 		iof.OnDel = func(ctx context.Context, key string) (ok bool) { return false }
@@ -91,10 +93,10 @@ func (iof *ImageOnFuncOption) Valid() {
 		iof.CBHas = func(ctx context.Context, key string, has bool) {}
 	}
 	if iof.CBGet == nil {
-		iof.CBGet = func(ctx context.Context, key string, val Value, err error) {}
+		iof.CBGet = func(ctx context.Context, key string, val Valuer, err error) {}
 	}
 	if iof.CBSet == nil {
-		iof.CBSet = func(ctx context.Context, key string, val Value, err error) {}
+		iof.CBSet = func(ctx context.Context, key string, val Valuer, err error) {}
 	}
 	if iof.CBDel == nil {
 		iof.CBDel = func(ctx context.Context, key string) {}
@@ -162,8 +164,8 @@ func (im *ImagineMap) Has(ctx context.Context, key string) bool {
 	return res
 }
 
-func (im *ImagineMap) Get(ctx context.Context, key string) (Value, error) {
-	var resVal Value
+func (im *ImagineMap) Get(ctx context.Context, key string) (Valuer, error) {
+	var resVal Valuer
 	var resErr error
 	var ok bool
 
@@ -184,7 +186,7 @@ func (im *ImagineMap) Get(ctx context.Context, key string) (Value, error) {
 	return resVal, resErr
 }
 
-func (im *ImagineMap) Set(ctx context.Context, key string, val Value) error {
+func (im *ImagineMap) Set(ctx context.Context, key string, val Valuer) error {
 	var resErr error
 	var ok bool
 
@@ -226,28 +228,28 @@ func (im *ImagineMap) Range(ctx context.Context, f RangeFunc) {
 	var ok bool
 	var rf RangeFunc
 
-	alreadyKeys := map[string]struct{}{}
+	rangedKeys := map[string]struct{}{}
 
 	// cb
-	defer func() { im.opt.CBRange(ctx, alreadyKeys) }()
+	defer func() { im.opt.CBRange(ctx, rangedKeys) }()
 
 	ok, rf = im.opt.OnRange(ctx, f)
 	if ok {
 		f = rf
 	}
 
-	im.memmap.Range(ctx, func(ctx context.Context, key string, value Value) bool {
-		alreadyKeys[key] = struct{}{}
+	im.memmap.Range(ctx, func(ctx context.Context, key string, val Valuer) bool {
+		rangedKeys[key] = struct{}{}
 
-		return f(ctx, key, value)
+		return f(ctx, key, val)
 	})
 
-	im.diskmap.Range(ctx, func(ctx context.Context, key string, value Value) bool {
-		if _, ok := alreadyKeys[key]; ok {
+	im.diskmap.Range(ctx, func(ctx context.Context, key string, val Valuer) bool {
+		if _, ok := rangedKeys[key]; ok {
 			return true
 		}
 
-		return f(ctx, key, value)
+		return f(ctx, key, val)
 	})
 }
 
@@ -270,9 +272,6 @@ func (im *ImagineMap) Encode(ctx context.Context) ([]byte, error) {
 }
 
 func (im *ImagineMap) Decode(ctx context.Context, b []byte) (IMapStorage, error) {
-	// TODO
-	// 把传进来的 bytes 变为当前的 imap
-
 	var ok bool
 	var resStorage IMapStorage
 	var resErr error
@@ -345,17 +344,17 @@ func (nm *NilMap) Has(ctx context.Context, key string) bool {
 	return false
 }
 
-func (nm *NilMap) Get(ctx context.Context, key string) (Value, error) {
+func (nm *NilMap) Get(ctx context.Context, key string) (Valuer, error) {
 	return nil, nil
 }
 
-func (nm *NilMap) Set(ctx context.Context, key string, val Value) error {
+func (nm *NilMap) Set(ctx context.Context, key string, val Valuer) error {
 	return nil
 }
 
 func (nm *NilMap) Del(ctx context.Context, key string) {}
 
-func (nm *NilMap) Range(ctx context.Context, f func(ctx context.Context, key string, value Value) bool) {
+func (nm *NilMap) Range(ctx context.Context, f func(ctx context.Context, key string, val Valuer) bool) {
 }
 
 func (nm *NilMap) Encode(ctx context.Context) ([]byte, error) {
