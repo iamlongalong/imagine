@@ -42,12 +42,14 @@ log.Println(v)
 - [ ] implement merger
 - [ ] wal for recover
 </br>
+
 - [x] ~~force valuer type (bind valuer with map namespace)~~ [2023-03-26]
 - [ ] generate valuer with pb/~~gob/json~~/msgpack
 - [ ] implement compresser
 - [ ] valuer with wasm
 - [ ] use pb for internal struct marshaller (using json and gob now)
 </br>
+
 - [ ] add server implement
 - [ ] add server client
 - [ ] implement listener
@@ -57,6 +59,7 @@ log.Println(v)
 - [ ] benchmark and more tests
 - [ ] examples and documents
 </br>
+
 - [ ] optimize the index file structure (data file also)
 - [ ] with relations define in model (like join query)
 - [ ] UI viewer for monitoring
