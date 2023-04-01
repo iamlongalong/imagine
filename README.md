@@ -67,3 +67,7 @@ log.Println(v)
 - [ ] add primary and standby structure
 - [ ] add cluster structure
 - [ ] with crdt support
+
+# other
+
+这个项目的一些前置信息可以参考 [我的一次内部分享](https://blog.longalong.cn/posts/23_03_28_15_01_a_record_of_sharing_of_database.html)
