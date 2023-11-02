@@ -1,0 +1,55 @@
+{
+  "Maps": [
+    {
+      "Name": "longtest",
+      "Engine": "dmap",
+      "Index": {
+        "FileName": "longtest.dmx",
+        "IndexMeta": {}
+      },
+      "Data": {
+        "DataFile": "defaultdata"
+      },
+      "Valuer": {
+        "Name": "bytes_valuer"
+      },
+      "CacheManager": {
+        "Enable": true,
+        "CacheSize": 200,
+        "ExpirationSec": 600
+      }
+    },
+    {
+      "Name": "helloworld",
+      "Engine": "inmemory",
+      "Index": {
+        "FileName": "helloworld.dmx",
+        "IndexMeta": {}
+      },
+      "Data": {
+        "DataFile": "defaultdata"
+      },
+      "Valuer": {
+        "Name": "bytes_valuer"
+      },
+      "Cache": {
+        "Enable": false
+      },
+      "Options": {
+        "xxx": "for diffrent engine"
+      }
+    }
+  ],
+  "DataFiles": [
+    {
+      "Name": "defaultdata",
+      "FileName": "default.dm",
+      "PageSize": 128,
+      "PagesNum": 0,
+      "PageBitMapFile": "default.dmb"
+    }
+  ],
+  "Infos": {
+    "Maps.Engine": "enum as 'inmemory' for mem map, 'disk' for disk map, 'dmap' for hybrid mem and disk map"
+  }
+}
