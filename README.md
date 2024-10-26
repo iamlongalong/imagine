@@ -1,5 +1,17 @@
 # imagine
 
+这要解决的是 大结构体 的修改问题，要考虑 结构体嵌套复用 的问题。
+每个修改都是大结构体中一个小字段的修改。
+
+sqlite 的模式可以参考，相当于自己基于文件系统之上又实现了一套文件系统，只是这套文件系统就可以自己指定 page(block) 大小，以适应不同数据表的需求。
+
+我希望解决一些问题：
+1. 大结构体的频繁小修改问题 (期望是 imagine 这个项目解决)
+2. 嵌套结构体的直接存取问题, 而不是用 tables 存储 (imagine 同时也尝试解决这个问题)
+3. 前后端一体化的文档存储 (reactive 是解决这个的一个尝试)
+4. 小 kv 的易维护的本地化存储 (diskv 解决)
+
+
 imagine is a diskmap implementation
 
 for some case, we has map which got a large number of members, and then lack of RAM happens……
